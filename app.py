@@ -17,7 +17,7 @@ import hashlib
 from datetime import datetime
 import streamlit as st
 import pandas as pd
-from inventory_manager import InventoryManager, StockReportError
+from inventory_manager import InventoryManager, StockReportError, find_current_report
 
 # -----------------------------------------------------------------------------
 # 1. PAGE CONFIGURATION & SETUP
@@ -29,6 +29,9 @@ st.set_page_config(
 )
 
 # Initialize Session State Objects
+if "uploader_key" not in st.session_state:
+    st.session_state.uploader_key = 0
+
 if "mgr" not in st.session_state:
     st.session_state.mgr = InventoryManager()
 
@@ -173,7 +176,7 @@ with tab1:
                 st.markdown(msg["content"].replace("\n", "  \n"))
 
         # Chat input box
-        user_input = st.chat_input("Enter order, ask questions, or say 'confirm' (e.g. Party Bilal wants 50 of ID 7)...")
+        user_input = st.chat_input("Enter order, ask questions, or say 'confirm'")
 
         if user_input:
             # 1. Add user message to history
@@ -327,7 +330,9 @@ with tab2:
 
     # ---- Upload -----------------------------------------------------------------
     uploaded = st.file_uploader(
-        "Upload today's stock report (.xlsx)", type=["xlsx", "xlsm"], key="stock_report_uploader"
+        "Upload today's stock report (.xlsx)",
+        type=["xlsx", "xlsm"],
+        key=f"stock_report_uploader_{st.session_state.uploader_key}"
     )
     if uploaded is not None:
         file_bytes = uploaded.getvalue()
@@ -350,89 +355,189 @@ with tab2:
 
     if st.session_state.get("upload_flash"):
         st.success(st.session_state.pop("upload_flash"))
+    if st.session_state.get("report_delete_flash"):
+        st.success(st.session_state.pop("report_delete_flash"))
+    if st.session_state.get("report_delete_error"):
+        st.error(st.session_state.pop("report_delete_error"))
 
-    # ---- Current report status --------------------------------------------------
+    # ---- Current report status & management -------------------------------------
     stores = mgr.get_all_stores()
     load_info = mgr.last_load_info
+    report_files = mgr.get_report_files()
 
     if load_info.get("error"):
         st.error(f"The stored report could not be read: {load_info['error']}")
 
-    if not stores:
+    if not stores and not report_files:
         st.info("No stock report has been uploaded yet. Upload today's Excel file above.")
     else:
-        report_date = load_info.get("report_date")
-        meta = load_info.get("meta", {})
-        status = f"📅 Stock as on **{report_date or 'unknown date'}**"
-        if meta.get("original_name"):
-            status += f" · file `{meta['original_name']}` uploaded {meta.get('uploaded_at', '')}"
-        st.markdown(status)
+        if stores:
+            report_date = load_info.get("report_date")
+            meta = load_info.get("meta", {})
+            status = f"📅 Stock as on **{report_date or 'unknown date'}**"
+            if meta.get("original_name"):
+                status += f" · file `{meta['original_name']}` uploaded {meta.get('uploaded_at', '')}"
 
-        if report_date:
-            age_days = (datetime.now().date() - datetime.strptime(report_date, "%Y-%m-%d").date()).days
-            if age_days > 0:
-                st.warning(f"This report is {age_days} day(s) old. Upload today's file to refresh the stock.")
-        deducted = mgr.get_order_deductions()
-        if deducted:
-            st.caption(f"ℹ️ Figures below already subtract {deducted:,} units released in this app since this report was uploaded.")
-        for msg in load_info.get("warnings", []):
-            st.warning(f"Report check: {msg}")
+            col_status, col_dl = st.columns([3, 1])
+            with col_status:
+                st.markdown(status)
+            with col_dl:
+                current_path = find_current_report(mgr.data_dir)
+                if current_path and os.path.exists(current_path):
+                    try:
+                        with open(current_path, "rb") as f_obj:
+                            st.download_button(
+                                label="📥 Download Excel",
+                                data=f_obj.read(),
+                                file_name=os.path.basename(current_path),
+                                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                                key="dl_current_report",
+                                use_container_width=True
+                            )
+                    except Exception:
+                        pass
 
-        # ---- Office selector + metrics -------------------------------------------
-        ALL_OFFICES = "All offices (combined)"
-        selected_store = st.selectbox(
-            "View stock for:", [ALL_OFFICES] + list(stores.keys()), key="store_sheet_select"
-        )
-        ratio = float(safety_pct) / 100.0
+            if report_date:
+                age_days = (datetime.now().date() - datetime.strptime(report_date, "%Y-%m-%d").date()).days
+                if age_days > 0:
+                    st.warning(f"This report is {age_days} day(s) old. Upload today's file to refresh the stock.")
+            deducted = mgr.get_order_deductions()
+            if deducted:
+                st.caption(f"ℹ️ Figures below already subtract {deducted:,} units released in this app since this report was uploaded.")
+            for msg in load_info.get("warnings", []):
+                st.warning(f"Report check: {msg}")
 
-        if selected_store == ALL_OFFICES:
-            combined = pd.concat(
-                [df.assign(Office=name) for name, df in stores.items()], ignore_index=True
+        # ---- Manage / Remove report files from data folder ------------------
+        if report_files:
+            with st.expander(
+                f"🗑️ **Remove Excel File from `data` Folder** ({len(report_files)} file{'s' if len(report_files) > 1 else ''} present)",
+                expanded=(not stores)
+            ):
+                st.caption(
+                    "Permanently delete stock report Excel file(s) from the server's `data/` directory. "
+                    "This immediately removes the file and resets/updates the loaded stock inventory."
+                )
+
+                file_options = {
+                    f"{rf['filename']} ({rf['size_kb']} KB, updated {rf['modified_at']})" + (" — [CURRENT ACTIVE]" if rf["is_current"] else ""): rf["filename"]
+                    for rf in report_files
+                }
+
+                selected_file_label = st.selectbox(
+                    "Select Excel file to remove:",
+                    options=list(file_options.keys()),
+                    key="delete_report_file_select"
+                )
+                selected_filename = file_options[selected_file_label]
+
+                col_conf, col_btn = st.columns([2, 1])
+                with col_conf:
+                    confirm_del = st.checkbox(
+                        f"I confirm I want to permanently remove `{selected_filename}` from `data/`",
+                        key="delete_report_file_confirm"
+                    )
+                with col_btn:
+                    if st.button(
+                        "🗑️ Remove File",
+                        type="primary",
+                        disabled=not confirm_del,
+                        key="btn_delete_report_file",
+                        use_container_width=True
+                    ):
+                        ok, msg = mgr.delete_report_file(selected_filename)
+                        if ok:
+                            st.session_state.processed_upload_id = None
+                            st.session_state.uploader_key = st.session_state.get("uploader_key", 0) + 1
+                            st.session_state.context["pending_plan"] = None
+                            st.session_state.report_delete_flash = msg
+                            st.rerun()
+                        else:
+                            st.session_state.report_delete_error = msg
+                            st.rerun()
+
+                if len(report_files) > 1:
+                    st.divider()
+                    st.caption("Bulk cleanup:")
+                    col_all_conf, col_all_btn = st.columns([2, 1])
+                    with col_all_conf:
+                        confirm_all = st.checkbox(
+                            "I confirm I want to delete ALL Excel report files in `data/`",
+                            key="delete_all_reports_confirm"
+                        )
+                    with col_all_btn:
+                        if st.button(
+                            "🗑️ Remove All Files",
+                            disabled=not confirm_all,
+                            key="btn_delete_all_reports",
+                            use_container_width=True
+                        ):
+                            ok, msg = mgr.delete_all_report_files()
+                            if ok:
+                                st.session_state.processed_upload_id = None
+                                st.session_state.uploader_key = st.session_state.get("uploader_key", 0) + 1
+                                st.session_state.context["pending_plan"] = None
+                                st.session_state.report_delete_flash = msg
+                                st.rerun()
+                            else:
+                                st.session_state.report_delete_error = msg
+                                st.rerun()
+
+        if stores:
+            # ---- Office selector + metrics -------------------------------------------
+            ALL_OFFICES = "All offices (combined)"
+            selected_store = st.selectbox(
+                "View stock for:", [ALL_OFFICES] + list(stores.keys()), key="store_sheet_select"
             )
-            wide = combined.pivot_table(
-                index=["Product_ID", "Item_Name", "Category"], columns="Office", values="Total_Stock",
-                aggfunc="sum", fill_value=0
-            )
-            wide["Total"] = wide.sum(axis=1)
-            wide = wide.reset_index().sort_values("Product_ID")
-            m1, m2 = st.columns(2)
-            m1.metric("Products", len(wide))
-            m2.metric("Total Stock (all offices)", f"{int(wide['Total'].sum()):,} units")
-            st.dataframe(wide, hide_index=True, use_container_width=True)
-        else:
-            df_selected = stores[selected_store].copy()
-            df_selected["Safety_Buffer"] = df_selected["Total_Stock"].apply(
-                lambda s: int(s * ratio) if s > 0 else 0
-            )
-            df_selected["Available_for_Sale"] = (
-                df_selected["Total_Stock"] - df_selected["Safety_Buffer"]
-            ).clip(lower=0)
+            ratio = float(safety_pct) / 100.0
 
-            m1, m2, m3 = st.columns(3)
-            m1.metric("Office", selected_store)
-            m2.metric("Total Stock", f"{int(df_selected['Total_Stock'].sum()):,} units")
-            m3.metric("Available for Dispatch", f"{int(df_selected['Available_for_Sale'].sum()):,} units")
+            if selected_store == ALL_OFFICES:
+                combined = pd.concat(
+                    [df.assign(Office=name) for name, df in stores.items()], ignore_index=True
+                )
+                wide = combined.pivot_table(
+                    index=["Product_ID", "Item_Name", "Category"], columns="Office", values="Total_Stock",
+                    aggfunc="sum", fill_value=0
+                )
+                wide["Total"] = wide.sum(axis=1)
+                wide = wide.reset_index().sort_values("Product_ID")
+                m1, m2 = st.columns(2)
+                m1.metric("Products", len(wide))
+                m2.metric("Total Stock (all offices)", f"{int(wide['Total'].sum()):,} units")
+                st.dataframe(wide, hide_index=True, use_container_width=True)
+            else:
+                df_selected = stores[selected_store].copy()
+                df_selected["Safety_Buffer"] = df_selected["Total_Stock"].apply(
+                    lambda s: int(s * ratio) if s > 0 else 0
+                )
+                df_selected["Available_for_Sale"] = (
+                    df_selected["Total_Stock"] - df_selected["Safety_Buffer"]
+                ).clip(lower=0)
 
-            search = st.text_input("🔍 Filter products", key="stock_filter")
-            if search:
-                df_selected = df_selected[df_selected["Item_Name"].str.contains(search, case=False, na=False)]
-            st.dataframe(
-                df_selected[["Product_ID", "Item_Name", "Category", "Total_Stock", "Safety_Buffer", "Available_for_Sale"]],
-                hide_index=True, use_container_width=True
-            )
+                m1, m2, m3 = st.columns(3)
+                m1.metric("Office", selected_store)
+                m2.metric("Total Stock", f"{int(df_selected['Total_Stock'].sum()):,} units")
+                m3.metric("Available for Dispatch", f"{int(df_selected['Available_for_Sale'].sum()):,} units")
 
-            # Batch & expiry detail straight from the report
-            with st.expander("📦 Batch & expiry details (as in the uploaded report)"):
-                batches = mgr.get_stock_batches()
-                detail = batches[batches["Store_Name"] == selected_store]
+                search = st.text_input("🔍 Filter products", key="stock_filter")
                 if search:
-                    detail = detail[detail["Item_Name"].str.contains(search, case=False, na=False)]
+                    df_selected = df_selected[df_selected["Item_Name"].str.contains(search, case=False, na=False)]
                 st.dataframe(
-                    detail[["Product_ID", "Item_Name", "Batch_No", "Expiry_Date", "Opening_Stock", "Sales", "Total_Stock", "Remarks"]]
-                    .rename(columns={"Total_Stock": "Closing_Balance"}),
+                    df_selected[["Product_ID", "Item_Name", "Category", "Total_Stock", "Safety_Buffer", "Available_for_Sale"]],
                     hide_index=True, use_container_width=True
                 )
-                st.caption("Batch figures are the report's own; order deductions are applied to the office totals above.")
+
+                # Batch & expiry detail straight from the report
+                with st.expander("📦 Batch & expiry details (as in the uploaded report)"):
+                    batches = mgr.get_stock_batches()
+                    detail = batches[batches["Store_Name"] == selected_store]
+                    if search:
+                        detail = detail[detail["Item_Name"].str.contains(search, case=False, na=False)]
+                    st.dataframe(
+                        detail[["Product_ID", "Item_Name", "Batch_No", "Expiry_Date", "Opening_Stock", "Sales", "Total_Stock", "Remarks"]]
+                        .rename(columns={"Total_Stock": "Closing_Balance"}),
+                        hide_index=True, use_container_width=True
+                    )
+                    st.caption("Batch figures are the report's own; order deductions are applied to the office totals above.")
 
 
 # =============================================================================

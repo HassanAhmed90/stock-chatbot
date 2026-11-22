@@ -340,6 +340,55 @@ def load_current_report(data_dir: str) -> Tuple[Optional[Dict[str, Any]], Dict[s
         return None, info
 
 
+def list_report_files(data_dir: str) -> List[Dict[str, Any]]:
+    """
+    Returns metadata for all Excel report files in data_dir, newest first.
+    """
+    if not os.path.isdir(data_dir):
+        return []
+    current_path = find_current_report(data_dir)
+    results = []
+    for f in os.listdir(data_dir):
+        if f.lower().endswith((".xlsx", ".xlsm")) and not f.startswith("~$"):
+            full_path = os.path.join(data_dir, f)
+            if os.path.isfile(full_path):
+                try:
+                    st_stat = os.stat(full_path)
+                    results.append({
+                        "filename": f,
+                        "path": full_path,
+                        "size_bytes": st_stat.st_size,
+                        "size_kb": round(st_stat.st_size / 1024, 1),
+                        "modified_at": datetime.fromtimestamp(st_stat.st_mtime).strftime("%Y-%m-%d %H:%M:%S"),
+                        "is_current": (full_path == current_path),
+                        "_mtime": st_stat.st_mtime,
+                    })
+                except OSError:
+                    continue
+    results.sort(key=lambda r: r["_mtime"], reverse=True)
+    return results
+
+
+def delete_report_file(data_dir: str, filename: str) -> Tuple[bool, str]:
+    """
+    Deletes an Excel file from the data folder.
+    Returns (success_bool, message_str).
+    """
+    if not filename:
+        return False, "No filename specified for deletion."
+    safe_name = os.path.basename(filename)
+    if not safe_name.lower().endswith((".xlsx", ".xlsm")):
+        return False, f"Invalid file type: '{safe_name}'. Only Excel files (.xlsx, .xlsm) can be removed."
+    target_path = os.path.join(data_dir, safe_name)
+    if not os.path.isfile(target_path):
+        return False, f"File '{safe_name}' does not exist in the data folder."
+    try:
+        os.remove(target_path)
+        return True, f"Report file '{safe_name}' was permanently deleted from the data folder."
+    except Exception as exc:
+        return False, f"Could not delete '{safe_name}' - is it open in another program (e.g. Excel)? ({exc})"
+
+
 class InventoryManager:
     """
     Manages regional store stock, safety buffer calculations,
@@ -441,6 +490,46 @@ class InventoryManager:
         self._cache_key = None  # force a re-read
         self._load_report()
         return parsed
+
+    def get_report_files(self) -> List[Dict[str, Any]]:
+        """Lists all Excel report files present in the data folder, newest first."""
+        return list_report_files(self.data_dir)
+
+    def delete_report_file(self, filename: str) -> Tuple[bool, str]:
+        """
+        Deletes a specific Excel report file from the data folder,
+        invalidates internal cache, and reloads current report state.
+        """
+        ok, msg = delete_report_file(self.data_dir, filename)
+        if ok:
+            self._cache_key = None
+            self._cache_value = None
+            self.last_load_info = {}
+            self._load_report()
+        return ok, msg
+
+    def delete_all_report_files(self) -> Tuple[bool, str]:
+        """
+        Deletes all Excel report files from the data folder.
+        """
+        files = self.get_report_files()
+        if not files:
+            return False, "No Excel files found in the data folder."
+        deleted = []
+        errors = []
+        for f in files:
+            ok, msg = delete_report_file(self.data_dir, f["filename"])
+            if ok:
+                deleted.append(f["filename"])
+            else:
+                errors.append(msg)
+        self._cache_key = None
+        self._cache_value = None
+        self.last_load_info = {}
+        self._load_report()
+        if errors:
+            return False, f"Removed {len(deleted)} file(s), but encountered errors: {'; '.join(errors)}"
+        return True, f"All {len(deleted)} Excel report file(s) were removed from the data folder."
 
     def get_report_key(self) -> str:
         """Identifies the uploaded report that ledger entries belong to."""
@@ -1187,6 +1276,28 @@ class InventoryManager:
                     "pending_plan": context.get("pending_plan"),
                     "updated_context": context
                 }
+
+        # ---------------------------------------------------------------------
+        # INTENT 3B: STOCK REPORT FILE REMOVAL INQUIRY
+        # ---------------------------------------------------------------------
+        remove_report_triggers = [
+            "remove excel", "delete excel", "remove stock report", "delete stock report",
+            "remove file from data", "delete file from data", "remove data file", "delete data file"
+        ]
+        if any(re.search(rf'\b{re.escape(trigger)}\b', lower_input) for trigger in remove_report_triggers):
+            return {
+                "reply": (
+                    "🗑️ **To remove an Excel stock report file from the data folder:**\n\n"
+                    "1. Open the **🏬 Stock (Daily Report)** tab.\n"
+                    "2. Open the **'Remove Excel File from `data` Folder'** section.\n"
+                    "3. Select the file you wish to delete and check the confirmation box.\n"
+                    "4. Click **'Remove File'**.\n\n"
+                    "This permanently deletes the file from the server's `data/` folder and resets the stock inventory."
+                ),
+                "action": "INFO",
+                "pending_plan": context.get("pending_plan"),
+                "updated_context": context
+            }
 
         # ---------------------------------------------------------------------
         # INTENT 4: KNOWLEDGE BASE SEARCH

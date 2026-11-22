@@ -64,10 +64,12 @@ stock-chatbot/
 
 ## ✨ Key System Features
 
-### 1. 🏬 Daily Excel Report Ingestion (`python-calamine`)
+### 1. 🏬 Daily Excel Report Ingestion & Removal (`python-calamine`)
 - High-speed reading of multi-sheet Excel reports (`.xlsx`, `.xlsm`) using `python-calamine`.
 - Automatically parses product categories, regional store offices, batch numbers, expiry dates, sales, and closing balances.
-- **Non-destructive**: The uploaded report remains unaltered. All deductions are calculated dynamically from released order documents tied to the current report date.
+- **Web-Based File Removal**: Option to delete report files directly from the web interface, which permanently removes them from the server's `data/` folder and resets/updates stock inventory.
+- **Download Active Report**: Download the currently loaded Excel report directly from Tab 2.
+- **Non-destructive**: The uploaded report remains unaltered during orders. All deductions are calculated dynamically from released order documents tied to the current report date.
 - Displays report metadata: date of report, report age warnings, offices detected, and units deducted.
 
 ### 2. 🔢 Persistent Product ID Registry (`product_ids.json`)
@@ -191,7 +193,7 @@ The Streamlit interface is organized into 4 dedicated tabs:
 | Tab | Purpose | Features |
 |---|---|---|
 | **💬 1. Chatbot & Order Dispatch** | Primary conversational order management | Real-time chat, context inspector, allocation preview table, one-click "Confirm & Release" / "Cancel", and manual direct-order entry form. |
-| **🏬 2. Stock (Daily Report)** | Daily stock report viewer & uploader | Drag-and-drop report uploader, combined cross-office stock matrix, single-office drill-downs, search filter, and raw batch/expiry detail viewer. |
+| **🏬 2. Stock (Daily Report)** | Daily stock report viewer & uploader | Drag-and-drop report uploader, Excel file removal from `data/` folder, download active report, combined cross-office stock matrix, single-office drill-downs, search filter, and raw batch/expiry detail viewer. |
 | **📄 3. Released Orders History** | Audit trail & document management | Consolidated released orders ledger, one-click order cancellation with automatic stock restoration, and direct Excel download buttons. |
 | **📚 4. Knowledge Base & FAQs** | Operations & policy reference | Interactive keyword search, categorized articles covering safety buffers, cascading rules, regional hub locations, SLAs, and commercial terms. |
 

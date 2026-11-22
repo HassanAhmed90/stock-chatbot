@@ -203,6 +203,29 @@ class KnowledgeBase:
                     "- **Payment Methods:** Bank wire transfer, Pay Order, or corporate credit terms (Net-30) for approved parties.\n"
                     "- **Release Condition:** Release documents indicate Total Order Value for finance clearance."
                 )
+            },
+
+            # -----------------------------------------------------------------
+            # 9. STOCK REPORT UPLOAD & REMOVAL
+            # -----------------------------------------------------------------
+            {
+                "id": "stock_report_management",
+                "category": "System Workflow",
+                "title": "Daily Stock Report & File Management Policy",
+                "keywords": [
+                    "remove excel", "delete excel", "remove file", "delete file",
+                    "data folder", "remove stock report", "delete stock report",
+                    "clear data", "upload stock report", "stock report file"
+                ],
+                "summary": (
+                    "**Daily Stock Report & File Management:**\n\n"
+                    "- **Upload Stock:** Upload the daily Excel file (`.xlsx` or `.xlsm`) in the **'Stock (Daily Report)'** tab. "
+                    "The file is saved in the server's `data/` folder and acts as the live source of truth for stock.\n"
+                    "- **Remove from Web:** You can remove any uploaded Excel file from the web interface at any time. "
+                    "In the **'Stock (Daily Report)'** tab, open **'Remove Excel File from data Folder'**, select the file, "
+                    "confirm permanent removal, and click **'Remove File'**. This deletes the file from `data/` and updates stock instantly.\n"
+                    "- **Download:** You can also download the current active stock report Excel file directly from the web interface."
+                )
             }
         ]
 
