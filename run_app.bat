@@ -5,45 +5,22 @@ echo    Enterprise Multi-Store Inventory & Order Allocation System
 echo =====================================================================
 echo.
 
-set VENV_PYTHON=.venv\Scripts\python.exe
-set VENV_STREAMLIT=.venv\Scripts\streamlit.exe
-
-if exist "%VENV_PYTHON%" (
-    echo [INFO] Found virtual environment in .venv.
-    echo.
-    echo [1/3] Installing Dependencies into .venv...
-    "%VENV_PYTHON%" -m pip install -r requirements.txt
-
-    echo.
-    echo [2/3] Checking data folder...
-    if not exist "data" mkdir data
-    if exist "data\*.xlsx" (
-        echo [INFO] Stock report found in data folder.
-    ) else (
-        echo [INFO] No stock report yet - upload it in the Stock tab once the app opens.
-    )
-
-    echo.
-    echo [3/3] Launching Web Application...
-    echo Opening application at http://localhost:8501...
-    "%VENV_STREAMLIT%" run app.py
+if not exist "data" mkdir data
+if exist "data\*.xlsx" (
+    echo [INFO] Stock report found in data folder.
 ) else (
-    echo [INFO] .venv not found, attempting system python...
-    echo [1/3] Installing Python Dependencies...
-    python -m pip install -r requirements.txt
+    echo [INFO] No stock report yet - upload it in the Stock tab once the app opens.
+)
 
-    echo.
-    echo [2/3] Checking data folder...
-    if not exist "data" mkdir data
-    if exist "data\*.xlsx" (
-        echo [INFO] Stock report found in data folder.
-    ) else (
-        echo [INFO] No stock report yet - upload it in the Stock tab once the app opens.
-    )
-
-    echo.
-    echo [3/3] Launching Web Application...
-    streamlit run app.py
+echo.
+if exist ".venv\Scripts\uvicorn.exe" (
+    echo [INFO] Launching with .venv uvicorn at http://127.0.0.1:8000...
+    start "" http://127.0.0.1:8000
+    ".venv\Scripts\uvicorn.exe" app:app --host 127.0.0.1 --port 8000
+) else (
+    echo [INFO] Launching with system Python uvicorn at http://127.0.0.1:8000...
+    start "" http://127.0.0.1:8000
+    python -m uvicorn app:app --host 127.0.0.1 --port 8000
 )
 
 pause

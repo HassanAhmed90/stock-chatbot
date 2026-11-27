@@ -1,269 +1,266 @@
-# 📦 Enterprise Multi-Store Inventory & Order Allocation System
+# Stock Inventory & Order Allocation Portal
 
-An intelligent multi-store inventory allocation chatbot and management dashboard with **multi-turn conversation context memory**, **dynamic safety buffer reservation**, and an **integrated Knowledge Base**. 
+A FastAPI-based stock management system for daily Excel inventory reports, multi-store order allocation, zone operations, payment recovery, inter-warehouse transfers (ITR), delivery tracking, and returns.
 
-The system operates directly from daily uploaded Excel stock reports (`.xlsx` / `.xlsm`), automatically parses client orders (by **Product ID**, product name, or multi-item lists), computes optimal regional dispatch across distribution hubs with safety stock protection, generates standalone Excel release orders, and provides a real-time audit trail with automated stock restoration upon cancellation.
+The application provides a browser portal for five zone users, one recovery user, and an administrator. It uses SQLite for users and operational records, and Excel files as the source for daily stock data and generated order documents.
 
----
+## Features
 
-## 🏛️ System Architecture & Workflow
+- Role-based authentication with salted PBKDF2 password hashes and signed session cookies
+- First-login password change and administrator password reset
+- Daily stock report upload and removal
+- Product and batch-level stock views
+- Configurable 10%-30% safety buffer, with 15% as the default
+- Multi-store cascading allocation from the highest-available stores
+- Natural-language and manual order planning
+- Confirmed Excel order documents and order history
+- Reversible order cancellation with automatic stock restoration
+- Five operational zones with configurable city assignments
+- Zone order requests, delivery challans, status updates, returns, and ITR requests
+- Admin approvals for orders and ITR transfers
+- Payment hold/recovery workflow
+- Knowledge-base search
+- SQLite dashboard and activity reporting
 
-```text
-User Input (Interactive Chat / Natural Language / Direct Order Form)
-        │
-        ├── 1. NLP & Context Engine:
-        │      • Maps numeric Product IDs ("ID 7") or product names
-        │      • Parses multi-item orders ("50 of ID 7, 20 of ID 12")
-        │      • Resolves pronouns & relative references ("this", "that", "same item")
-        │      • Extracts client/party names ("Party Bilal", "Client Alpha")
-        │
-        ├── 2. Knowledge Base Retrieval:
-        │      • Answers queries on safety buffers, regional hubs, SLAs & payment terms
-        │
-        ▼
-Allocation & Cascading Engine (inventory_manager.py)
-        │
-        ├── 3. Reads regional store inventory from daily report in 'data/' via python-calamine
-        ├── 4. Calculates dynamic safety stock reserve (10%–30%, default 15%) per store
-        ├── 5. Greedy Cascading: Fulfills order starting from stores with highest available stock
-        │
-        ▼
-Order Confirmation & Release (via Chat "confirm" or UI Button)
-        │
-        ├── A. Generates Standalone Release Document: 'orders/Order_{ID}_{Party}.xlsx'
-        ├── B. Dynamic Stock Deduction: Subtracts dispatched quantities from current report totals
-        ├── C. Context Memory Update: Records Order ID & dispatch breakdown for follow-up queries
-        └── D. Audit Trail & Reversibility: Order history aggregated dynamically; cancelling an order
-               deletes its Excel file and automatically restores units back to store stock
-```
+## Technology
 
----
+- Python 3.10+
+- FastAPI
+- Uvicorn
+- SQLite
+- Pandas and OpenPyXL
+- python-calamine
+- Vanilla HTML, CSS, and JavaScript
 
-## 📁 Project Directory Structure
+## Application Roles
+
+| Role | Capabilities |
+|---|---|
+| Administrator | Upload stock reports, configure safety stock, plan and release orders through chat, approve/reject/hold requests, manage ITR transfers, view dashboards and statistics, manage users and cities, and reset operational data |
+| Zone user | View stock available in the assigned zone, submit orders, track delivery, set challan/delivery status, process returns, and create or receive ITR requests |
+| Recovery user | Create and view payment recovery entries across zones and release held payment orders |
+
+There are five predefined zones: `Zone I`, `Zone II`, `Zone III`, `Zone IV`, and `Zone V`.
+
+## Default Accounts
+
+The database creates the following accounts only when no users exist:
+
+| Username | Password | Role |
+|---|---|---|
+| `admin` | `admin123` | Administrator |
+| `zone1` | `zone1@123` | Zone I |
+| `zone2` | `zone2@123` | Zone II |
+| `zone3` | `zone3@123` | Zone III |
+| `zone4` | `zone4@123` | Zone IV |
+| `zone5` | `zone5@123` | Zone V |
+| `recovery` | `recovery@123` | Recovery |
+
+All seeded accounts are required to change their password on first login. Change these credentials before exposing the application beyond a trusted local network.
+
+## Project Structure
 
 ```text
 stock-chatbot/
-│
-├── data/                           # Storage folder for the daily uploaded stock report
-│   └── [daily_report].xlsx         # Latest uploaded Excel report (source of truth for stock)
-│
-├── orders/                         # Output directory for released order documents
-│   └── Order_ORD-..._Party.xlsx    # Standalone Excel release documents (sheet: Release_Details)
-│
-├── app.py                          # Streamlit web application & multi-tab UI
-├── inventory_manager.py            # Core business logic: report parser, allocation engine, NLP & order lifecycle
-├── knowledge_base.py               # Domain knowledge base (policies, regional hubs, FAQs, lead times)
-├── product_ids.json                # Persistent registry mapping products to stable numeric IDs (1, 2, 3...)
-├── requirements.txt                # Python dependencies (streamlit, pandas, openpyxl, python-calamine)
-├── run_app.bat                     # Windows one-click launcher script
-├── setup_data.py                   # Optional legacy utility for generating mock store data
-└── README.md                       # System documentation
+├── app.py                 FastAPI application and HTTP API
+├── portal.py              Authentication, SQLite models, and portal workflows
+├── inventory_manager.py   Excel parsing, allocation, orders, ITR, and stock logic
+├── knowledge_base.py      Searchable operations knowledge base
+├── setup_data.py          Optional legacy mock-data workbook generator
+├── templates/
+│   └── index.html         Browser application
+├── static/
+│   ├── app.js             Frontend behavior and API calls
+│   └── style.css          Frontend styling
+├── data/
+│   ├── portal.db          Created automatically
+│   ├── .session_secret    Created automatically
+│   └── *.xlsx / *.xlsm    Uploaded daily stock reports
+├── orders/                Generated order Excel files
+├── itr/                   Generated ITR Excel files
+├── requirements.txt
+├── run_app.bat
+└── README.md
 ```
 
----
+The `orders/` and `itr/` directories are created automatically if missing.
 
-## ✨ Key System Features
-
-### 1. 🏬 Daily Excel Report Ingestion & Removal (`python-calamine`)
-- High-speed reading of multi-sheet Excel reports (`.xlsx`, `.xlsm`) using `python-calamine`.
-- Automatically parses product categories, regional store offices, batch numbers, expiry dates, sales, and closing balances.
-- **Web-Based File Removal**: Option to delete report files directly from the web interface, which permanently removes them from the server's `data/` folder and resets/updates stock inventory.
-- **Download Active Report**: Download the currently loaded Excel report directly from Tab 2.
-- **Non-destructive**: The uploaded report remains unaltered during orders. All deductions are calculated dynamically from released order documents tied to the current report date.
-- Displays report metadata: date of report, report age warnings, offices detected, and units deducted.
-
-### 2. 🔢 Persistent Product ID Registry (`product_ids.json`)
-- Assigns short, convenient numeric IDs (`1`, `2`, `3`, ...) to every catalog item.
-- Persisted in `product_ids.json` across sessions and daily report uploads so product IDs remain consistent.
-- Fast ordering via chat: simply type `Party Bilal wants 50 of ID 7`.
-
-### 3. 🛡️ Dynamic Safety Stock Buffer
-- Configurable safety buffer slider (10% to 30%, default 15%) in the sidebar.
-- **Formula:**
-  $$\text{Safety Buffer} = \lceil \text{Store Stock} \times \text{Buffer \%} \rceil$$
-  $$\text{Salable Stock} = \max(0, \text{Store Stock} - \text{Safety Buffer})$$
-- Ensures regional walk-in clients and local emergencies never face stockouts from bulk orders.
-
-### 4. 🔄 Auto-Cascading Multi-Store Fulfillment
-- If a single regional store cannot fulfill the full requested quantity, the allocation engine prioritizes stores with the highest available salable stock.
-- Automatically splits the dispatch across multiple stores to achieve 100% fulfillment whenever possible.
-- Detailed breakdown shows exactly how many units are dispatched from each store and remaining buffer levels.
-
-### 5. 🧠 Conversational Context Memory & Multi-Product Orders
-- **Multi-product orders**: Handles multiple items in a single sentence:
-  > *"Party Bilal wants 50 of ID 7, 20 of ID 12 and 100 of ID 30"*  
-  All items are evaluated, allocated, and released together under a single unified Order ID.
-- **Pronoun & context resolution**:
-  > User: *"Check stock for Avitryl Oral Solution"* (or *"ID 1"*)  
-  > Assistant: *[Displays stock breakdown across all offices]*  
-  > User: *"Party Bilal wants 150 of this"*  
-  > Assistant: *[Automatically resolves "this" to Avitryl Oral Solution]*
-- **In-Chat confirmation & cancellation**: Type `"confirm"`, `"proceed"`, or `"cancel"` directly in the chat.
-- **Contextual queries**: Ask *"What was the order ID?"* or *"Which stores dispatched?"*.
-
-### 6. 📄 Standalone Release Orders & Reversible Cancellations
-- Each confirmed order creates an Excel document (`orders/Order_{ID}_{Party}.xlsx`) with full dispatch details, item codes, quantities, and fulfilling store sheets.
-- Released orders can be downloaded directly from the web interface.
-- **Order Cancellation**: If a client cancels an order, deleting it from Tab 3 removes the file and automatically restores dispatched stock back to the active report.
-
----
-
-## 🔄 Step-by-Step System Walkthrough (How It Works)
-
-The following 8-step lifecycle demonstrates how the system processes inventory and orders from raw upload to final release:
-
-```mermaid
-flowchart TD
-    A["1. Upload Daily Excel Report (.xlsx / .xlsm)"] --> B["2. Fast Parsing via python-calamine & Product ID Registry"]
-    B --> C["3. Browse Stock or Inquire via Chat ('Stock for ID 7')"]
-    C --> D["4. Submit Order (Single, Multi-Product, or Contextual Pronoun)"]
-    D --> E["5. Dynamic Safety Stock Reserve (10%–30%) Protection"]
-    E --> F["6. Greedy Cascading Dispatch Across Regional Stores"]
-    F --> G["7. Review Allocation Proposal in Chat & Side Panel"]
-    G -->|"Confirm ('confirm' / UI button)"| H["8A. Generate Release Document (orders/Order_*.xlsx) & Deduct Stock"]
-    G -->|"Cancel ('cancel' / UI button)"| H2["8B. Discard Proposal (No Stock Impact)"]
-    H --> I["9. Live Audit Trail & Reversible Order Deletion (Restores Stock)"]
-```
-
-### **Step 1: Daily Report Upload & Ingestion**
-1. The user navigates to **Tab 2: 🏬 Stock (Daily Report)** and uploads today's stock report (`.xlsx` or `.xlsm`), or saves it directly in the `data/` directory.
-2. The engine uses `python-calamine` to parse visible sheets with `"Products"` and `"Closing Balance"` headers.
-3. The original uploaded file is treated as an immutable source of truth and is never altered.
-
-### **Step 2: Persistent Product ID Mapping**
-1. The catalog parser extracts every unique SKU and checks it against `product_ids.json`.
-2. Existing products retain their permanent numeric ID (e.g. `ID 7` &rarr; `AQUAMIN-1LTR`).
-3. Any newly discovered products are automatically assigned the next available integer ID and saved to `product_ids.json`.
-4. Users can now reference products in chat by either their short ID (`ID 7`) or product name.
-
-### **Step 3: Checking Stock & Context Caching**
-1. A user can inspect stock across all regional distribution hubs in Tab 2, or ask in chat:
-   > *"Check stock for Avitryl Oral Solution"* (or *"ID 1 stock"*)
-2. The assistant responds with the stock breakdown across all regional offices (Karachi, Lahore, Faisalabad, etc.) and the total network balance.
-3. The assistant automatically caches this item in the session's **Conversational Memory Context**.
-
-### **Step 4: Order Intake & NLP Parsing**
-1. The user inputs an order via the chat interface or the manual form in Tab 1:
-   - **Single Item:** `"Party Bilal wants 50 of ID 7"`
-   - **Multi-Product:** `"Party Bilal wants 50 of ID 7, 20 of ID 12 and 100 of ID 30"`
-   - **Contextual Reference:** After checking stock, user says: `"Party Bilal wants 150 of this"`
-2. The NLP parser extracts:
-   - **Client/Party Name:** Identifies `"Party Bilal"` or falls back to the previous party in context.
-   - **Products & Quantities:** Resolves numeric IDs, product names, and associated quantities.
-   - **Pronoun Resolution:** Seamlessly binds relative terms (`"this"`, `"that"`, `"it"`, `"same item"`) to the cached item.
-
-### **Step 5: Safety Buffer Calculation**
-1. The engine checks the active safety buffer setting (slider in sidebar, default 15%, adjustable from 10% to 30%).
-2. For each store holding the item, it calculates:
-   $$\text{Safety Buffer} = \lceil \text{Store Stock} \times \text{Buffer \%} \rceil$$
-   $$\text{Salable Stock} = \max(0, \text{Store Stock} - \text{Safety Buffer})$$
-3. This reserved buffer cannot be consumed by client orders, protecting stock for retail walk-ins and local emergencies.
-
-### **Step 6: Greedy Multi-Store Cascading Allocation**
-1. Stores with salable stock are sorted in descending order (highest available stock first).
-2. The engine attempts to fulfill the requested units from the primary store.
-3. If the primary store does not have enough salable units, it takes all available units from that store and cascades the remaining quantity to secondary stores.
-4. Fulfills 100% of the request whenever network stock permits (`FULL`), or allocates maximum available units if there is a network shortage (`PARTIAL`).
-
-### **Step 7: Proposal Review & Interactive Breakdown**
-1. The assistant posts a clear allocation proposal in the chat:
-   - Shows fulfillable vs. requested quantities.
-   - Notes safety stock held.
-   - Summarizes multi-store splits (e.g. *Karachi: 100 units, Lahore: 50 units*).
-2. The **Order Dispatch Panel** on the right displays an interactive breakdown table detailing each store's dispatch count, remaining stock, safety buffer kept, and store status.
-
-### **Step 8: Order Confirmation, Release & Reversibility**
-1. **Confirmation:**
-   - The user replies `"confirm"` in chat or clicks **"✅ Confirm & Release"**.
-   - Generates an official Excel document in `orders/Order_{Order_ID}_{Party}.xlsx` containing full dispatch rows on the `Release_Details` sheet.
-   - Deducts dispatched stock in real time for all subsequent queries.
-   - Stores the Order ID in context memory for follow-up questions (`"What was the order ID?"`).
-2. **Cancellation / Rejection:**
-   - The user can type `"cancel"` or click **"❌ Cancel Order"** to safely discard any active proposal.
-3. **Reversible Audit Trail (Tab 3):**
-   - Review consolidated order history and download release Excel files.
-   - If an order is cancelled by a client after release, deleting it from Tab 3 removes the document and **automatically restores the dispatched units** back to the active report's store stock!
-
----
-
-## 🖥️ Web Interface Overview
-
-The Streamlit interface is organized into 4 dedicated tabs:
-
-| Tab | Purpose | Features |
-|---|---|---|
-| **💬 1. Chatbot & Order Dispatch** | Primary conversational order management | Real-time chat, context inspector, allocation preview table, one-click "Confirm & Release" / "Cancel", and manual direct-order entry form. |
-| **🏬 2. Stock (Daily Report)** | Daily stock report viewer & uploader | Drag-and-drop report uploader, Excel file removal from `data/` folder, download active report, combined cross-office stock matrix, single-office drill-downs, search filter, and raw batch/expiry detail viewer. |
-| **📄 3. Released Orders History** | Audit trail & document management | Consolidated released orders ledger, one-click order cancellation with automatic stock restoration, and direct Excel download buttons. |
-| **📚 4. Knowledge Base & FAQs** | Operations & policy reference | Interactive keyword search, categorized articles covering safety buffers, cascading rules, regional hub locations, SLAs, and commercial terms. |
-
----
-
-## 🚀 Getting Started & Execution
+## Installation
 
 ### Prerequisites
-- **Python 3.10+** installed on your system.
 
----
+- Python 3.10 or newer
+- Microsoft Windows is recommended for the included launcher, but the application can also run on other platforms supported by Python
+- A stock report with supported Excel headers
 
-### Option 1: Standard Terminal / VS Code (Recommended)
+### Windows Setup
 
-1. **Open the project folder** in your terminal or VS Code:
-   ```bash
-   cd stock-chatbot
-   ```
+```powershell
+cd D:\Side-projects\stock_inventory_chatbot\stock_inventory_chatbot\stock-chatbot
 
-2. **Activate the virtual environment** (or create one if needed):
-   - **PowerShell (Windows):**
-     ```powershell
-     .\.venv\Scripts\Activate.ps1
-     ```
-   - **Command Prompt (Windows):**
-     ```cmd
-     .venv\Scripts\activate.bat
-     ```
-   - **Linux / macOS:**
-     ```bash
-     source .venv/bin/activate
-     ```
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
 
-3. **Install dependencies:**
-   ```bash
-   pip install -r requirements.txt
-   ```
+python -m pip install --upgrade pip
+pip install -r requirements.txt
+```
 
-4. **Launch the Streamlit application:**
-   ```bash
-   streamlit run app.py
-   ```
+If PowerShell blocks activation, use Command Prompt:
 
-5. **Upload your stock report:**
-   - When the web browser opens (`http://localhost:8501`), navigate to the **🏬 Stock (Daily Report)** tab.
-   - Upload today's stock report (`.xlsx` or `.xlsm`).
-   - You are ready to view stock and dispatch orders via the chatbot!
+```bat
+.venv\Scripts\activate.bat
+pip install -r requirements.txt
+```
 
----
+### Run the Application
 
-### Option 2: Windows One-Click Batch Script
+With the virtual environment active:
 
-Double-click **`run_app.bat`**. The script will automatically:
-1. Detect or use the virtual environment / system Python.
-2. Install or verify required dependencies from `requirements.txt`.
-3. Check the `data/` directory for existing stock reports.
-4. Launch the Streamlit application in your default browser.
+```powershell
+python app.py
+```
 
----
+Or:
 
-## 💬 Example Chat Commands
+```powershell
+python -m uvicorn app:app --host 127.0.0.1 --port 8000 --reload
+```
 
-| Intent | Example Prompt |
+Open <http://127.0.0.1:8000>.
+
+A health endpoint is available at <http://127.0.0.1:8000/health>.
+
+### Windows One-Click Launcher
+
+Double-click `run_app.bat`. It launches Uvicorn on port `8000`, opens the browser, and uses `.venv\Scripts\uvicorn.exe` when available.
+
+## Stock Reports
+
+1. Sign in as `admin`.
+2. Open the stock report section.
+3. Upload one or more `.xlsx` or `.xlsm` files.
+4. The inventory engine parses the files and loads the store/offices, products, batches, quantities, and dates found in the supported sheets.
+
+Reports can also be placed directly in `data/`. Place `Products.xlsx` in `data/` to provide product groups and catalog metadata.
+
+The system keeps uploaded reports unchanged. Released order quantities are deducted dynamically in stock calculations; deleting an order restores its quantities when the stock report has not been replaced.
+
+## Order Workflow
+
+1. The administrator checks stock or submits a chat/manual order.
+2. The system calculates the safety buffer for every store:
+   - `Safety buffer = ceil(store stock * configured percentage)`
+   - `Available stock = max(0, store stock - safety buffer)`
+3. The allocation engine sorts stores by available stock and cascades quantities across stores until the request is fulfilled or network stock is exhausted.
+4. The administrator reviews the proposed allocation.
+5. Confirmation generates an Excel file under `orders/` and dynamically deducts the allocated quantities.
+6. Zone users, the recovery portal, and the admin portal track the resulting operational request and delivery status.
+7. Deleting a released order removes its Excel file and restores the dispatched quantities.
+
+Example chat prompts:
+
+```text
+Check stock for product name
+Stock for ID 7
+Party Bilal wants 50 of ID 7
+Party Bilal wants 50 of ID 7 and 20 of ID 12
+Confirm
+Cancel
+What is the safety stock policy?
+```
+
+## Zone Portal Workflow
+
+Zone users can:
+
+- Submit orders for cities assigned to their zone
+- Check zone and network availability before submission
+- View pending, approved, held, rejected, and cancelled orders
+- Add challan numbers after approval
+- Mark orders as dispatched, delivered, not delivered, or cancelled
+- Register full or partial returns
+- Request stock transfers from a main warehouse
+- Receive approved ITR transfers
+
+City ownership is configurable from the administrator zone-management screen.
+
+## Recovery Portal Workflow
+
+The recovery portal records payment collection entries for parties and cities across all zones. Recovery entries include:
+
+- Party name
+- Zone and city
+- Product group
+- Amount
+- Reference number
+- Optional note
+
+Administrators can move held orders back to pending after a payment issue is resolved.
+
+## Inter-Warehouse Transfer Workflow
+
+1. A zone user requests an ITR from a source warehouse to a destination warehouse.
+2. The administrator reviews the request and available stock.
+3. The administrator approves and specifies the source and transfer quantity.
+4. Approved stock is deducted and the ITR moves to `IN_TRANSIT`.
+5. The zone or administrator marks it received to transfer the quantity to the destination.
+6. Rejection or cancellation stops or reverses the transfer according to its current state.
+
+## Data and Storage
+
+| Location | Purpose |
 |---|---|
-| **Check Stock by Name** | `"Check stock for Avitryl Oral Solution"` |
-| **Check Stock by ID** | `"Stock for ID 7"` or `"#7 stock"` |
-| **Single Product Order** | `"Party Bilal wants 50 of ID 7"` |
-| **Multi-Product Order** | `"Party Bilal wants 50 of ID 7, 20 of ID 12 and 100 of ID 30"` |
-| **Contextual Follow-up** | *"Check stock for Aquamin"* &rarr; `"Order 100 of this for Client Alpha"` |
-| **Confirm Proposal** | `"confirm"`, `"proceed"`, or `"release order"` |
-| **Cancel Proposal** | `"cancel"` or `"abort"` |
-| **Query Last Order** | `"What was the order ID?"` or `"Which stores dispatched?"` |
-| **Knowledge Base Inquiry** | `"What is safety stock?"`, `"Where are our regional hubs?"`, `"Delivery lead times?"` |
+| `data/portal.db` | Users, zones, requests, recovery entries, ITR records, and settings |
+| `data/.session_secret` | Persistent random key used to sign session cookies |
+| `data/*.xlsx` / `*.xlsm` | Daily stock report files |
+| `data/Products.xlsx` | Optional product catalog/group metadata |
+| `product_ids.json` | Persistent product ID registry |
+| `orders/` | Released order workbooks |
+| `itr/` | Inter-warehouse transfer workbooks |
+
+Generated SQLite and Excel backup/reset behavior is controlled by the administrator.
+
+## Resetting Operational Data
+
+The administrator reset screen previews the number of database entries and release files that will be removed.
+
+To execute a reset, the administrator must type `DELETE ALL`. By default, a timestamped database backup is created under `data/` before operational records and order/ITR files are deleted.
+
+Reset does not remove user accounts or zone-city mappings.
+
+## API Overview
+
+The FastAPI server exposes browser and API endpoints under `/api/`.
+
+| Area | Main endpoints |
+|---|---|
+| Authentication | `/api/auth/login`, `/api/auth/me`, `/api/auth/logout`, `/api/auth/change-password` |
+| Chat and orders | `/api/chat/*`, `/api/orders/*` |
+| Stock | `/api/stock/upload`, `/api/stock/view`, `/api/stock/download/*` |
+| Zone portal | `/api/zone/*` |
+| Recovery portal | `/api/recovery/*` |
+| Administration | `/api/admin/*` |
+| Knowledge base | `/api/kb?q=...` |
+| Health check | `/health` |
+
+Interactive API documentation is available at:
+
+- Swagger UI: <http://127.0.0.1:8000/docs>
+- ReDoc: <http://127.0.0.1:8000/redoc>
+
+## Optional Mock Setup
+
+`setup_data.py` is a legacy utility that creates an example `data/stock_inventory.xlsx` and store CSV files. It does not replace or initialize the portal's current SQLite-backed workflow.
+
+```powershell
+python setup_data.py
+```
+
+## Troubleshooting
+
+- **Login fails:** Confirm the account is active and has not been disabled in the admin user screen.
+- **No stock appears:** Upload a supported stock workbook or place it in `data/`.
+- **An uploaded report is rejected:** Keep the report format compatible with the parser and include recognizable product/store/stock columns or sheets.
+- **A port is already in use:** Start on another port, for example `--port 8001`.
+- **An Excel file cannot be removed:** Close the file in Excel and retry.
+- **Users must change a password:** Use the first-login password form or have an administrator reset the password.
