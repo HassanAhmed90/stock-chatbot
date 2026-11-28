@@ -99,6 +99,168 @@
           </div>
           <button id="sb-refresh-btn" class="btn btn-secondary btn-block btn-sm" style="margin-top:10px">🔄 Refresh Data</button>
         </div>
+
+        <div class="sidebar-card">
+          <div class="sb-section-title">📋 Total Orders <span id="sb-orders-total" class="sb-badge">0</span></div>
+          <div class="sb-order-stats" id="sb-order-stats">
+            <div class="sb-order-row">
+              <span class="sb-order-label">🆕 New</span>
+              <span class="sb-order-count" id="sb-cnt-new">0</span>
+            </div>
+            <div class="sb-order-row">
+              <span class="sb-order-label">⏳ In process</span>
+              <span class="sb-order-count" id="sb-cnt-inprocess">0</span>
+            </div>
+            <div class="sb-order-row sb-order-ok">
+              <span class="sb-order-label">✅ OK</span>
+              <span class="sb-order-count" id="sb-cnt-ok">0</span>
+            </div>
+            <div class="sb-order-row sb-order-hold">
+              <span class="sb-order-label">⛔ Hold</span>
+              <span class="sb-order-count" id="sb-cnt-hold">0</span>
+            </div>
+            <div class="sb-order-row sb-order-rejected">
+              <span class="sb-order-label">❌ Rejected</span>
+              <span class="sb-order-count" id="sb-cnt-rejected">0</span>
+            </div>
+            <div class="sb-order-row sb-order-cancelled">
+              <span class="sb-order-label">🚫 Cancelled</span>
+              <span class="sb-order-count" id="sb-cnt-cancelled">0</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="sidebar-card">
+          <div class="sb-section-title">💰 Total Recovery <span id="sb-adm-rec-total" class="sb-badge">0</span></div>
+          <div class="sb-order-stats">
+            <div class="sb-order-row">
+              <span class="sb-order-label">⏳ Pending</span>
+              <span class="sb-order-count" id="sb-adm-rec-pending">0</span>
+            </div>
+            <div class="sb-order-row sb-order-ok">
+              <span class="sb-order-label">✅ Completed</span>
+              <span class="sb-order-count" id="sb-adm-rec-completed">0</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="sidebar-card">
+          <div class="sb-section-title">🚚 Deliveries <span id="sb-adm-del-total" class="sb-badge">0</span></div>
+          <div class="sb-order-stats">
+            <div class="sb-order-row">
+              <span class="sb-order-label">🧾 Awaiting challan</span>
+              <span class="sb-order-count" id="sb-adm-del-awaiting">0</span>
+            </div>
+            <div class="sb-order-row">
+              <span class="sb-order-label">🚛 Dispatched</span>
+              <span class="sb-order-count" id="sb-adm-del-dispatched">0</span>
+            </div>
+            <div class="sb-order-row sb-order-ok">
+              <span class="sb-order-label">✅ Delivered</span>
+              <span class="sb-order-count" id="sb-adm-del-delivered">0</span>
+            </div>
+            <div class="sb-order-row sb-order-hold">
+              <span class="sb-order-label">⏳ Not delivered yet</span>
+              <span class="sb-order-count" id="sb-adm-del-notyet">0</span>
+            </div>
+            <div class="sb-order-row sb-order-rejected">
+              <span class="sb-order-label">↩️ Returned</span>
+              <span class="sb-order-count" id="sb-adm-del-returned">0</span>
+            </div>
+            <div class="sb-order-row sb-order-hold">
+              <span class="sb-order-label">↪️ Part. returned</span>
+              <span class="sb-order-count" id="sb-adm-del-partret">0</span>
+            </div>
+            <div class="sb-order-row sb-order-cancelled">
+              <span class="sb-order-label">🚫 Cancelled</span>
+              <span class="sb-order-count" id="sb-adm-del-cancelled">0</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div id="recovery-sidebar-controls" class="hidden">
+        <div class="sidebar-card">
+          <div class="sb-section-title">💰 Total Recovery <span id="sb-rec-total" class="sb-badge">0</span></div>
+          <div class="sb-order-stats">
+            <div class="sb-order-row">
+              <span class="sb-order-label">⏳ Pending</span>
+              <span class="sb-order-count" id="sb-rec-pending">0</span>
+            </div>
+            <div class="sb-order-row sb-order-ok">
+              <span class="sb-order-label">✅ Completed</span>
+              <span class="sb-order-count" id="sb-rec-completed">0</span>
+            </div>
+          </div>
+          <button id="sb-rec-refresh-btn" class="btn btn-secondary btn-block btn-sm" style="margin-top:10px">🔄 Refresh Data</button>
+        </div>
+      </div>
+
+      <div id="zone-sidebar-controls" class="hidden">
+        <div class="sidebar-card">
+          <div class="sb-section-title">📋 Total Orders <span id="sb-z-orders-total" class="sb-badge">0</span></div>
+          <div class="sb-order-stats">
+            <div class="sb-order-row">
+              <span class="sb-order-label">🆕 New</span>
+              <span class="sb-order-count" id="sb-z-cnt-new">0</span>
+            </div>
+            <div class="sb-order-row">
+              <span class="sb-order-label">⏳ In process</span>
+              <span class="sb-order-count" id="sb-z-cnt-inprocess">0</span>
+            </div>
+            <div class="sb-order-row sb-order-ok">
+              <span class="sb-order-label">✅ OK</span>
+              <span class="sb-order-count" id="sb-z-cnt-ok">0</span>
+            </div>
+            <div class="sb-order-row sb-order-hold">
+              <span class="sb-order-label">⛔ Hold</span>
+              <span class="sb-order-count" id="sb-z-cnt-hold">0</span>
+            </div>
+            <div class="sb-order-row sb-order-rejected">
+              <span class="sb-order-label">❌ Rejected</span>
+              <span class="sb-order-count" id="sb-z-cnt-rejected">0</span>
+            </div>
+            <div class="sb-order-row sb-order-cancelled">
+              <span class="sb-order-label">🚫 Cancelled</span>
+              <span class="sb-order-count" id="sb-z-cnt-cancelled">0</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="sidebar-card">
+          <div class="sb-section-title">🚚 Deliveries <span id="sb-z-del-total" class="sb-badge">0</span></div>
+          <div class="sb-order-stats">
+            <div class="sb-order-row">
+              <span class="sb-order-label">🧾 Awaiting challan</span>
+              <span class="sb-order-count" id="sb-z-del-awaiting">0</span>
+            </div>
+            <div class="sb-order-row">
+              <span class="sb-order-label">🚛 Dispatched</span>
+              <span class="sb-order-count" id="sb-z-del-dispatched">0</span>
+            </div>
+            <div class="sb-order-row sb-order-ok">
+              <span class="sb-order-label">✅ Delivered</span>
+              <span class="sb-order-count" id="sb-z-del-delivered">0</span>
+            </div>
+            <div class="sb-order-row sb-order-hold">
+              <span class="sb-order-label">⏳ Not delivered yet</span>
+              <span class="sb-order-count" id="sb-z-del-notyet">0</span>
+            </div>
+            <div class="sb-order-row sb-order-rejected">
+              <span class="sb-order-label">↩️ Returned</span>
+              <span class="sb-order-count" id="sb-z-del-returned">0</span>
+            </div>
+            <div class="sb-order-row sb-order-hold">
+              <span class="sb-order-label">↪️ Part. returned</span>
+              <span class="sb-order-count" id="sb-z-del-partret">0</span>
+            </div>
+            <div class="sb-order-row sb-order-cancelled">
+              <span class="sb-order-label">🚫 Cancelled</span>
+              <span class="sb-order-count" id="sb-z-del-cancelled">0</span>
+            </div>
+          </div>
+          <button id="sb-z-refresh-btn" class="btn btn-secondary btn-block btn-sm" style="margin-top:10px">🔄 Refresh Data</button>
+        </div>
       </div>
     </aside>
 

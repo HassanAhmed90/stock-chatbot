@@ -17,7 +17,6 @@ const state = {
 };
 
 const ADMIN_TABS = [
-  { id: "chat", label: "💬 Chatbot & Dispatch" },
   { id: "approvals", label: "✅ Approvals" },
   { id: "itr", label: "🔁 ITR (Transfers)" },
   { id: "dashboard", label: "📊 Zone Dashboard" },
@@ -39,7 +38,6 @@ const ZONE_TABS = [
 const RECOVERY_TABS = [
   { id: "r_new", label: "➕ New Recovery" },
   { id: "r_mine", label: "📋 Recoveries" },
-  { id: "r_hold", label: "⛔ Payment Holds" },
 ];
 
 function esc(v) {
@@ -85,23 +83,42 @@ function renderMd(text) {
   return html;
 }
 
-function toast(msg, type = "info") {
+function toast(msg, type = "info", durationMs = 4200) {
   const container = document.getElementById("toast-container");
   const el = document.createElement("div");
   el.className = `toast ${type}`;
   el.textContent = msg;
   container.appendChild(el);
-  setTimeout(() => el.remove(), 4200);
+  setTimeout(() => el.remove(), durationMs);
+}
+
+const TOKEN_KEY = "stock_portal_token";
+function getToken() {
+  try { return sessionStorage.getItem(TOKEN_KEY); } catch { return null; }
+}
+function setToken(t) {
+  try {
+    if (t) sessionStorage.setItem(TOKEN_KEY, t);
+    else sessionStorage.removeItem(TOKEN_KEY);
+  } catch {}
 }
 
 async function api(url, opts = {}) {
-  const fetchOpts = { credentials: "same-origin", ...opts };
+  const headers = { ...(opts.headers || {}) };
+  const tok = getToken();
+  if (tok) headers["Authorization"] = `Bearer ${tok}`;
+
+  const fetchOpts = { ...opts, headers };
   if (opts.json !== undefined) {
-    fetchOpts.headers = { "Content-Type": "application/json", ...(opts.headers || {}) };
+    headers["Content-Type"] = "application/json";
     fetchOpts.body = JSON.stringify(opts.json);
     delete fetchOpts.json;
   }
   const res = await fetch(url, fetchOpts);
+  const refreshed = res.headers.get("X-Refreshed-Token");
+  if (refreshed && getToken()) {
+    setToken(refreshed);
+  }
   let data = null;
   const ct = res.headers.get("content-type") || "";
   if (ct.includes("application/json")) {
@@ -109,8 +126,18 @@ async function api(url, opts = {}) {
   }
   if (!res.ok) {
     if (res.status === 401 && state.user) {
+      // Server rejected our session (expired, invalid, or account disabled)
+      setToken(null);
       state.user = null;
-      renderAuth();
+      state.activeTab = null;
+      renderRoot();
+      setTimeout(() => {
+        const u = document.getElementById("login-username");
+        const p = document.getElementById("login-password");
+        if (u) u.value = "";
+        if (p) p.value = "";
+        toast("🔒 Session expired. Please sign in again.", "warning", 6000);
+      }, 300);
     }
     throw new Error((data && data.detail) || `Request failed (${res.status})`);
   }
@@ -207,6 +234,7 @@ document.getElementById("login-form").addEventListener("submit", async (e) => {
         password: document.getElementById("login-password").value,
       },
     });
+    setToken(res.token);
     state.user = res.user;
     state.activeTab = null;
     renderRoot();
@@ -241,9 +269,17 @@ async function doLogout() {
   try {
     await api("/api/auth/logout", { method: "POST" });
   } catch {}
+  setToken(null);
   state.user = null;
   state.activeTab = null;
   renderRoot();
+  // Always clear credentials on logout so form is blank
+  setTimeout(() => {
+    const u = document.getElementById("login-username");
+    const p = document.getElementById("login-password");
+    if (u) u.value = "";
+    if (p) p.value = "";
+  }, 100);
 }
 
 document.getElementById("logout-btn").addEventListener("click", doLogout);
@@ -280,26 +316,36 @@ async function renderAppShell() {
   document.getElementById("sb-rolemeta").textContent = `${u.username} · ${roleDesc}`;
 
   const adminSb = document.getElementById("admin-sidebar-controls");
+  const recSb = document.getElementById("recovery-sidebar-controls");
+  const zoneSb = document.getElementById("zone-sidebar-controls");
   const title = document.getElementById("portal-title");
   const sub = document.getElementById("portal-subtitle");
 
   let tabs = [];
   if (u.role === "admin") {
     adminSb.classList.remove("hidden");
+    recSb.classList.add("hidden");
+    zoneSb.classList.add("hidden");
     title.textContent = "📦 Inventory & Order Allocation Assistant";
     sub.textContent = "Multi-store stock, zone-wise order approval, chatbot dispatch and ITR.";
     tabs = ADMIN_TABS;
     await refreshAdminSidebar();
   } else if (u.role === "recovery") {
     adminSb.classList.add("hidden");
+    recSb.classList.remove("hidden");
+    zoneSb.classList.add("hidden");
     title.textContent = "💰 Recovery Portal — all zones";
     sub.textContent = `Signed in as ${u.full_name || u.username} — payment recovery of every zone in one place.`;
     tabs = RECOVERY_TABS;
+    await refreshRecoverySidebar();
   } else {
     adminSb.classList.add("hidden");
+    recSb.classList.add("hidden");
+    zoneSb.classList.remove("hidden");
     title.textContent = `🏷️ ${u.zone} Portal`;
     sub.textContent = `Signed in as ${u.full_name || u.username} — place orders for ${u.zone} cities and manage delivery / ITR.`;
     tabs = ZONE_TABS;
+    await refreshZoneSidebar();
   }
 
   if (!state.activeTab || !tabs.some((t) => t.id === state.activeTab)) {
@@ -324,6 +370,58 @@ async function renderAppShell() {
   loadActiveTab();
 }
 
+async function refreshRecoverySidebar() {
+  try {
+    const ov = await api("/api/recovery/overview");
+    document.getElementById("sb-rec-total").textContent = ov.total ?? 0;
+    document.getElementById("sb-rec-pending").textContent = ov.pending ?? 0;
+    document.getElementById("sb-rec-completed").textContent = ov.completed ?? 0;
+  } catch (err) {
+    toast(err.message, "error");
+  }
+}
+
+document.getElementById("sb-rec-refresh-btn").addEventListener("click", async () => {
+  await refreshRecoverySidebar();
+  loadActiveTab();
+  toast("Data refreshed", "success");
+});
+
+function fillDeliveryStats(prefix, dc) {
+  const d = dc || {};
+  document.getElementById(`${prefix}-total`).textContent      = d.total         ?? 0;
+  document.getElementById(`${prefix}-awaiting`).textContent   = d.awaiting      ?? 0;
+  document.getElementById(`${prefix}-dispatched`).textContent = d.dispatched    ?? 0;
+  document.getElementById(`${prefix}-delivered`).textContent  = d.delivered     ?? 0;
+  document.getElementById(`${prefix}-notyet`).textContent     = d.not_yet       ?? 0;
+  document.getElementById(`${prefix}-returned`).textContent   = d.returned      ?? 0;
+  document.getElementById(`${prefix}-partret`).textContent    = d.part_returned ?? 0;
+  document.getElementById(`${prefix}-cancelled`).textContent  = d.cancelled     ?? 0;
+}
+
+async function refreshZoneSidebar() {
+  try {
+    const ov = await api("/api/zone/overview");
+    const oc = ov.order_counts || {};
+    document.getElementById("sb-z-orders-total").textContent = oc.total ?? 0;
+    document.getElementById("sb-z-cnt-new").textContent       = oc["New"]        ?? 0;
+    document.getElementById("sb-z-cnt-inprocess").textContent = oc["In process"] ?? 0;
+    document.getElementById("sb-z-cnt-ok").textContent        = oc["OK"]         ?? 0;
+    document.getElementById("sb-z-cnt-hold").textContent      = oc["Hold"]       ?? 0;
+    document.getElementById("sb-z-cnt-rejected").textContent  = oc["Rejected"]   ?? 0;
+    document.getElementById("sb-z-cnt-cancelled").textContent = oc["Cancelled"]  ?? 0;
+    fillDeliveryStats("sb-z-del", ov.delivery_counts);
+  } catch (err) {
+    toast(err.message, "error");
+  }
+}
+
+document.getElementById("sb-z-refresh-btn").addEventListener("click", async () => {
+  await refreshZoneSidebar();
+  loadActiveTab();
+  toast("Data refreshed", "success");
+});
+
 async function refreshAdminSidebar() {
   try {
     const ov = await api("/api/admin/overview");
@@ -333,6 +431,25 @@ async function refreshAdminSidebar() {
     document.getElementById("safety-caption-pct").textContent = ov.safety_pct;
     document.getElementById("sb-stores").textContent = ov.active_stores;
     document.getElementById("sb-units").textContent = `${fmtNum(ov.total_units)} units`;
+
+    // Order counts panel
+    const oc = ov.order_counts || {};
+    document.getElementById("sb-orders-total").textContent = oc.total ?? 0;
+    document.getElementById("sb-cnt-new").textContent       = oc["New"]        ?? 0;
+    document.getElementById("sb-cnt-inprocess").textContent = oc["In process"] ?? 0;
+    document.getElementById("sb-cnt-ok").textContent        = oc["OK"]         ?? 0;
+    document.getElementById("sb-cnt-hold").textContent      = oc["Hold"]       ?? 0;
+    document.getElementById("sb-cnt-rejected").textContent  = oc["Rejected"]   ?? 0;
+    document.getElementById("sb-cnt-cancelled").textContent = oc["Cancelled"]  ?? 0;
+
+    // Recovery counts panel
+    const rc = ov.recovery_counts || {};
+    document.getElementById("sb-adm-rec-total").textContent     = rc.total     ?? 0;
+    document.getElementById("sb-adm-rec-pending").textContent   = rc.pending   ?? 0;
+    document.getElementById("sb-adm-rec-completed").textContent = rc.completed ?? 0;
+
+    // Delivery counts panel
+    fillDeliveryStats("sb-adm-del", ov.delivery_counts);
   } catch (err) {
     toast(err.message, "error");
   }
@@ -368,7 +485,6 @@ async function loadActiveTab() {
   root.innerHTML = `<div class="card muted">Loading...</div>`;
   try {
     switch (state.activeTab) {
-      case "chat": return await renderChatTab(root);
       case "approvals": return await renderApprovalsTab(root);
       case "itr": return await renderAdminItrTab(root);
       case "dashboard": return await renderDashboardTab(root);
@@ -384,7 +500,6 @@ async function loadActiveTab() {
       case "z_stock": return await renderZoneStockTab(root);
       case "r_new": return await renderRecoveryNewTab(root);
       case "r_mine": return await renderRecoveryListTab(root);
-      case "r_hold": return await renderRecoveryHoldsTab(root);
     }
   } catch (err) {
     root.innerHTML = `<div class="alert alert-error">${esc(err.message)}</div>`;
@@ -392,178 +507,7 @@ async function loadActiveTab() {
 }
 
 // ============================================================================
-// ADMIN TAB 1: CHATBOT & ORDER DISPATCH
-// ============================================================================
-async function renderChatTab(root) {
-  const data = await api("/api/chat/state");
-  const pending = data.context && data.context.pending_plan;
-  const items = data.items || [];
-
-  let dispatchHtml = "";
-  if (pending) {
-    const plans = pending.plans || [pending.plan];
-    const party = pending.party || "Valued Client";
-    dispatchHtml = `
-      <div class="alert alert-info">
-        <strong>Client / Party:</strong> ${esc(party)}<br>
-        ${plans.map((p) => `<strong>${esc(p.item_name)}:</strong> ${fmtNum(p.fulfilled_qty)} / ${fmtNum(p.requested_qty)} units`).join("<br>")}
-      </div>
-      ${plans
-        .filter((p) => p.dispatched_stores_count > 1)
-        .map(
-          (p) =>
-            `<div class="alert alert-warning">🔄 <strong>Auto-Cascading Active (${esc(p.item_name)}):</strong> split across ${p.dispatched_stores_count} stores!</div>`
-        )
-        .join("")}
-      ${plans
-        .map((p) => {
-          const rows = (p.allocations || [])
-            .filter((a) => a.Dispatch_Qty > 0 || a.Current_Stock > 0)
-            .map((a) => ({
-              "Store Sheet": a.Store_Name,
-              "Dispatch Qty": a.Dispatch_Qty,
-              Remaining: a.Remaining_Stock,
-              "Safety Buffer": a.Safety_Buffer,
-              "Store Status": a.Store_Status,
-            }));
-          return `<p><strong>Store Dispatch Breakdown — ${esc(p.item_name)}:</strong></p>${renderTable(
-            ["Store Sheet", "Dispatch Qty", "Remaining", "Safety Buffer", "Store Status"],
-            rows
-          )}`;
-        })
-        .join("")}
-      <div class="row-gap">
-        <button id="chat-confirm-btn" class="btn btn-primary" style="flex:1">✅ Confirm &amp; Release</button>
-        <button id="chat-cancel-btn" class="btn btn-secondary" style="flex:1">❌ Cancel Order</button>
-      </div>
-    `;
-  } else if (!items.length) {
-    dispatchHtml = `<div class="alert alert-info">No stock loaded yet. Upload today's stock report in the <strong>Stock (Daily Report)</strong> tab first.</div>`;
-  } else {
-    dispatchHtml = `
-      <p class="muted">Or calculate allocation directly using the form:</p>
-      <form id="manual-plan-form">
-        <label class="field">
-          <span>Client / Party Name</span>
-          <input type="text" id="mp-party" value="${esc((data.context && data.context.last_party_name) || "")}" placeholder="e.g. Party Bilal" required />
-        </label>
-        <label class="field">
-          <span>Select Product</span>
-          <select id="mp-item">
-            ${items.map((i) => `<option value="${esc(i.Item_Code)}">ID ${esc(i.Product_ID)} — ${esc(i.Item_Name)}</option>`).join("")}
-          </select>
-        </label>
-        <label class="field">
-          <span>Quantity (units)</span>
-          <input type="number" id="mp-qty" min="1" value="50" required />
-        </label>
-        <button type="submit" class="btn btn-primary btn-block">Calculate Allocation</button>
-      </form>
-    `;
-  }
-
-  root.innerHTML = `
-    <div class="chat-layout">
-      <div class="card">
-        <div class="space-between" style="margin-bottom:10px">
-          <h3 class="card-title" style="margin:0">💬 Assistant Conversation</h3>
-          <button id="chat-reset-btn" class="btn btn-outline btn-sm">Clear Chat</button>
-        </div>
-        <div class="chip-row">
-          <button type="button" class="chip" data-prompt="Stock for ID 1">Stock for ID 1</button>
-          <button type="button" class="chip" data-prompt="Party Bilal wants 50 of ID 1">Order 50 of ID 1</button>
-          <button type="button" class="chip" data-prompt="What is safety stock?">Safety stock policy</button>
-          <button type="button" class="chip" data-prompt="confirm">Confirm</button>
-        </div>
-        <div id="chat-box" class="chat-box">
-          ${data.messages
-            .map((m) => `<div class="chat-msg ${esc(m.role)}">${renderMd(m.content)}</div>`)
-            .join("")}
-        </div>
-        <form id="chat-send-form" class="row-gap">
-          <input type="text" id="chat-input" placeholder="Enter order, ask questions, or say 'confirm'..." style="flex:1" autocomplete="off" />
-          <button type="submit" class="btn btn-primary">Send</button>
-        </form>
-      </div>
-
-      <div class="card">
-        <h3 class="card-title">📑 Order Dispatch Panel</h3>
-        ${dispatchHtml}
-      </div>
-    </div>
-  `;
-
-  const box = document.getElementById("chat-box");
-  box.scrollTop = box.scrollHeight;
-
-  root.querySelectorAll(".chip").forEach((chip) => {
-    chip.addEventListener("click", () => {
-      document.getElementById("chat-input").value = chip.dataset.prompt;
-      document.getElementById("chat-send-form").requestSubmit();
-    });
-  });
-
-  document.getElementById("chat-send-form").addEventListener("submit", async (e) => {
-    e.preventDefault();
-    const input = document.getElementById("chat-input");
-    const msg = input.value.trim();
-    if (!msg) return;
-    input.value = "";
-    await api("/api/chat/message", { method: "POST", json: { message: msg } });
-    await refreshAdminSidebar();
-    await renderChatTab(root);
-  });
-
-  document.getElementById("chat-reset-btn").addEventListener("click", async () => {
-    await api("/api/chat/reset", { method: "POST" });
-    await renderChatTab(root);
-  });
-
-  const mpForm = document.getElementById("manual-plan-form");
-  if (mpForm) {
-    mpForm.addEventListener("submit", async (e) => {
-      e.preventDefault();
-      try {
-        await api("/api/chat/manual-plan", {
-          method: "POST",
-          json: {
-            party_name: document.getElementById("mp-party").value,
-            item_code: document.getElementById("mp-item").value,
-            quantity: Number(document.getElementById("mp-qty").value),
-          },
-        });
-        await renderChatTab(root);
-      } catch (err) {
-        toast(err.message, "error");
-      }
-    });
-  }
-
-  const cfmBtn = document.getElementById("chat-confirm-btn");
-  if (cfmBtn) {
-    cfmBtn.addEventListener("click", async () => {
-      try {
-        const res = await api("/api/chat/confirm", { method: "POST" });
-        toast(`Order ${res.result.order_id} released!`, "success");
-        await refreshAdminSidebar();
-        await renderChatTab(root);
-      } catch (err) {
-        toast(err.message, "error");
-      }
-    });
-  }
-
-  const canBtn = document.getElementById("chat-cancel-btn");
-  if (canBtn) {
-    canBtn.addEventListener("click", async () => {
-      await api("/api/chat/cancel", { method: "POST" });
-      await renderChatTab(root);
-    });
-  }
-}
-
-// ============================================================================
-// ADMIN TAB 2: APPROVALS
+// ADMIN TAB 1: APPROVALS
 // ============================================================================
 async function renderApprovalsTab(root) {
   const data = await api("/api/admin/approvals");
@@ -862,36 +806,30 @@ async function renderDashboardTab(root) {
 
   root.innerHTML = `
     <div class="card">
-      <h3 class="card-title">📊 Order Status</h3>
-      <div class="kpi-grid">
-        ${d.order_kpis.map((k) => `<div class="kpi-card"><div class="kpi-label">${esc(k.label)}</div><div class="kpi-value">${fmtNum(k.count)}</div></div>`).join("")}
-      </div>
+      <h3 class="card-title">📊 Order Status by Zone</h3>
       <p class="muted small">New = waiting &lt; ${d.new_window_min} min · In process = waiting longer · OK = approved · Hold = payment issue.</p>
       ${renderTable(d.by_status.columns, d.by_status.rows)}
     </div>
 
     <div class="card">
       <h3 class="card-title">Zone × Group × Subgroup</h3>
-      <div class="grid-3">
+      <div style="display:flex;flex-direction:column;gap:20px">
         <div>
           <strong>Order — statuses</strong>
-          ${pillGroup("df-ord", meta.all_states, f.ord)}
           ${renderTable(d.zone_group_order.columns, d.zone_group_order.rows)}
         </div>
         <div>
           <strong>Recovery — statuses</strong>
-          ${pillGroup("df-rec", meta.all_states, f.rec)}
           ${renderTable(d.zone_group_recovery.columns, d.zone_group_recovery.rows)}
         </div>
         <div>
           <strong>Delivery — statuses</strong>
-          ${pillGroup("df-del", meta.delivery_states, f.del)}
           ${renderTable(d.zone_group_delivery.columns, d.zone_group_delivery.rows)}
         </div>
       </div>
     </div>
 
-    <div class="grid-2">
+    <div style="display:flex;flex-direction:column;gap:14px">
       <div class="card">
         <h3 class="card-title">Delivery status by zone</h3>
         ${renderTable(d.delivery_by_zone.columns, d.delivery_by_zone.rows)}
@@ -919,9 +857,6 @@ async function renderDashboardTab(root) {
       });
     });
   };
-  bindChecks("df-ord", "ord");
-  bindChecks("df-rec", "rec");
-  bindChecks("df-del", "del");
   bindChecks("df-zone", "zones");
 }
 
@@ -1208,7 +1143,7 @@ async function renderAdminStockTab(root) {
                   ${esc((fi.stores && fi.stores.join(", ")) || "no office used (newer file exists)")} · uploaded ${esc(fi.uploaded_at)}
                   ${fi.age_days > 0 && fi.stores && fi.stores.length ? `<div class="alert alert-warning" style="margin-top:6px;margin-bottom:0">${esc(fi.stores.join(", "))} stock is ${fi.age_days} day(s) old. Upload today's file to refresh.</div>` : ""}
                 </div>
-                <a class="btn btn-outline btn-sm" href="/api/stock/download/${encodeURIComponent(fi.name)}">📥 Download Excel</a>
+                <a class="btn btn-outline btn-sm" href="/api/stock/download/${encodeURIComponent(fi.name)}" data-auth-dl="${esc(fi.name)}">📥 Download Excel</a>
               </div>
             `
             )
@@ -1398,7 +1333,7 @@ async function renderOrdersHistoryTab(root) {
               (f) => `
               <div class="space-between" style="padding:6px 0;border-bottom:1px solid var(--border)">
                 <span>📄 <code>${esc(f)}</code></span>
-                <a class="btn btn-outline btn-sm" href="/api/orders/download/${encodeURIComponent(f)}">Download</a>
+                <a class="btn btn-outline btn-sm" href="/api/orders/download/${encodeURIComponent(f)}" data-auth-dl="${esc(f)}">Download</a>
               </div>
             `
             )
@@ -1559,6 +1494,7 @@ async function renderZoneNewOrderTab(root) {
         },
       });
       toast(res.message, "success");
+      await refreshZoneSidebar();
       await renderZoneNewOrderTab(root);
     } catch (err) {
       toast(err.message, "error");
@@ -1683,6 +1619,7 @@ async function renderZoneDeliveryTab(root) {
           },
         });
         toast(res.message, "success");
+        await refreshZoneSidebar();
         await renderZoneDeliveryTab(root);
       } catch (err) {
         toast(err.message, "error");
@@ -1700,6 +1637,7 @@ async function renderZoneDeliveryTab(root) {
           json: { challan_no: box.querySelector(".del-ch").value },
         });
         toast(res.message, "success");
+        await refreshZoneSidebar();
         await renderZoneDeliveryTab(root);
       } catch (err) {
         toast(err.message, "error");
@@ -1711,6 +1649,7 @@ async function renderZoneDeliveryTab(root) {
       try {
         const res = await api(`/api/zone/delivery/${id}/cancel`, { method: "POST" });
         toast(res.message, "warning");
+        await refreshZoneSidebar();
         await renderZoneDeliveryTab(root);
       } catch (err) {
         toast(err.message, "error");
@@ -1742,6 +1681,7 @@ async function renderZoneDeliveryTab(root) {
         const opts = sel.value === "Cancel" ? { method: "POST" } : { method: "POST", json: { status: sel.value } };
         const res = await api(url, opts);
         toast(res.message, "success");
+        await refreshZoneSidebar();
         await renderZoneDeliveryTab(root);
       } catch (err) {
         toast(err.message, "error");
@@ -2002,6 +1942,7 @@ async function renderRecoveryNewTab(root) {
         },
       });
       toast(res.message, "success");
+      await refreshRecoverySidebar();
       await renderRecoveryNewTab(root);
     } catch (err) {
       toast(err.message, "error");
@@ -2039,53 +1980,98 @@ async function renderRecoveryListTab(root) {
   });
 }
 
-async function renderRecoveryHoldsTab(root) {
-  const data = await api("/api/recovery/holds");
-  const holds = data.holds || [];
-  let html = `
-    <div class="card">
-      <h3 class="card-title">⛔ Payment Holds</h3>
-      <p class="muted">Orders (all zones) that the admin put on <strong>Hold</strong> because of a payment issue. When payment is received, send the order back to the admin.</p>
-    </div>
-  `;
-  if (!holds.length) {
-    root.innerHTML = html + `<div class="alert alert-info">No order is on hold.</div>`;
-    return;
+// ============================================================================
+// IDLE-TIMEOUT / SESSION EXPIRY
+// ============================================================================
+// • Browser close → cookie deleted automatically (no max_age = session cookie).
+// • 30 min idle with no activity → logout.
+// • Server ping every 5 min to slide the server-side idle window.
+// ============================================================================
+(function setupIdleGuard() {
+  const IDLE_MS =  5 * 60 * 1000;          // 5 minutes idle → auto logout
+  const PING_MS =  2 * 60 * 1000;          // ping server every 2 min
+
+  let idleTimer = null;
+  let pingTimer = null;
+
+  function resetIdleTimer() {
+    clearTimeout(idleTimer);
+    idleTimer = setTimeout(onIdle, IDLE_MS);
   }
 
-  html += holds
-    .map(
-      (r) => `
-      <details class="accordion" open>
-        <summary><span>#${r.id} · ${esc(r.zone)} · ${esc(r.party)} · ${esc(r.item_name)} × ${fmtNum(r.qty)} → ${esc(r.city)}</span></summary>
-        <div class="accordion-body" data-hold-id="${r.id}">
-          <div class="alert alert-warning">Payment issue: ${esc(r.admin_note || "—")}</div>
-          <div class="row-gap">
-            <input type="text" class="hold-note" placeholder="Payment details (e.g. cheque / receipt no.)" style="flex:1" />
-            <button class="btn btn-primary hold-release-btn">💵 Payment received — send back to admin</button>
-          </div>
-        </div>
-      </details>
-    `
-    )
-    .join("");
-  root.innerHTML = html;
+  async function onIdle() {
+    if (!state.user) return;
+    try { await api("/api/auth/logout", { method: "POST" }); } catch {}
+    setToken(null);
+    state.user = null;
+    state.activeTab = null;
+    renderRoot();
+    // Clear login fields so credentials aren't visible to anyone who opens the page
+    setTimeout(() => {
+      const u = document.getElementById("login-username");
+      const p = document.getElementById("login-password");
+      if (u) u.value = "";
+      if (p) p.value = "";
+      toast("⏰ Session expired due to inactivity. Please sign in again.", "warning", 6000);
+    }, 300);
+  }
 
-  root.querySelectorAll("[data-hold-id]").forEach((box) => {
-    box.querySelector(".hold-release-btn").addEventListener("click", async () => {
-      try {
-        const res = await api(`/api/recovery/holds/${box.dataset.holdId}/release`, {
-          method: "POST",
-          json: { note: box.querySelector(".hold-note").value },
-        });
-        toast(res.message, "success");
-        await renderRecoveryHoldsTab(root);
-      } catch (err) {
-        toast(err.message, "error");
+  async function pingServer() {
+    if (!state.user) return;
+    try {
+      const res = await api("/api/auth/me");
+      if (!res.authenticated) {
+        setToken(null);
+        state.user = null;
+        state.activeTab = null;
+        renderRoot();
+        setTimeout(() => {
+          const u = document.getElementById("login-username");
+          const p = document.getElementById("login-password");
+          if (u) u.value = "";
+          if (p) p.value = "";
+          toast("🔒 Your session has ended. Please sign in again.", "warning", 6000);
+        }, 300);
       }
-    });
+    } catch {}
+  }
+
+  // Authenticated file download handler (passes per-tab Bearer token)
+  document.addEventListener("click", async (e) => {
+    const a = e.target.closest("a[data-auth-dl]");
+    if (!a) return;
+    e.preventDefault();
+    const url = a.getAttribute("href");
+    const filename = a.getAttribute("data-auth-dl") || "download.xlsx";
+    try {
+      const headers = {};
+      const tok = getToken();
+      if (tok) headers["Authorization"] = `Bearer ${tok}`;
+      const res = await fetch(url, { headers });
+      if (!res.ok) throw new Error(`Download failed (${res.status})`);
+      const blob = await res.blob();
+      const blobUrl = URL.createObjectURL(blob);
+      const tmp = document.createElement("a");
+      tmp.href = blobUrl;
+      tmp.download = filename;
+      document.body.appendChild(tmp);
+      tmp.click();
+      tmp.remove();
+      setTimeout(() => URL.revokeObjectURL(blobUrl), 1000);
+    } catch (err) {
+      toast(err.message, "error");
+    }
   });
-}
+
+  // Listen to any user activity to reset the idle clock
+  ["mousemove", "mousedown", "keydown", "touchstart", "scroll", "click"].forEach((evt) => {
+    document.addEventListener(evt, resetIdleTimer, { passive: true });
+  });
+
+  // Start timers
+  resetIdleTimer();
+  pingTimer = setInterval(pingServer, PING_MS);
+})();
 
 // Start
 bootstrap();

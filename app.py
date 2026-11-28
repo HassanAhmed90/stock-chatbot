@@ -17,6 +17,7 @@ import math
 import os
 import secrets
 import threading
+import time
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
@@ -47,6 +48,27 @@ portal.init_db()
 portal.seed_default_zones()
 
 
+# ---------------------------------------------------------------------------
+# Session-refresh middleware: slides the idle-timeout window on every
+# authenticated API request so active users are never kicked out mid-use.
+# ---------------------------------------------------------------------------
+from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.responses import Response as StarletteResponse
+
+class _SessionRefreshMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next):
+        response = await call_next(request)
+        # Only slide on /api/* routes (not static assets or the HTML shell)
+        if request.url.path.startswith("/api/"):
+            token_data = _verify_token(_extract_token(request))
+            if token_data:
+                new_token = _sign_token({"u": token_data["u"], "sid": token_data["sid"]})
+                response.headers["X-Refreshed-Token"] = new_token
+        return response
+
+app.add_middleware(_SessionRefreshMiddleware)
+
+
 def _load_secret() -> bytes:
     os.makedirs(os.path.dirname(SECRET_FILE), exist_ok=True)
     if os.path.isfile(SECRET_FILE):
@@ -68,6 +90,9 @@ def _load_secret() -> bytes:
 
 SESSION_SECRET = _load_secret()
 COOKIE_NAME = "stock_portal_session"
+# Idle timeout: session expires after this many seconds of inactivity.
+# Browser-close already kills the cookie (no max_age). This adds a server-side guard.
+SESSION_IDLE_SECONDS = 300  # 5 minutes
 
 WELCOME_MSG = (
     "👋 **Welcome! I am your Order Allocation Assistant to:**\n\n"
@@ -132,13 +157,15 @@ def _json_ok(payload: Any, status_code: int = 200) -> JSONResponse:
     return JSONResponse(content=_to_jsonable(payload), status_code=status_code)
 
 
-def _sign_token(payload: Dict[str, str]) -> str:
+def _sign_token(payload: Dict[str, Any]) -> str:
+    # Always stamp the current time so we can enforce idle timeout server-side
+    payload = {**payload, "iat": int(time.time())}
     raw = base64.urlsafe_b64encode(json.dumps(payload, separators=(",", ":")).encode("utf-8")).decode("ascii")
     sig = hmac.new(SESSION_SECRET, raw.encode("ascii"), hashlib.sha256).hexdigest()
     return f"{raw}.{sig}"
 
 
-def _verify_token(token: Optional[str]) -> Optional[Dict[str, str]]:
+def _verify_token(token: Optional[str]) -> Optional[Dict[str, Any]]:
     if not token or "." not in token:
         return None
     raw, sig = token.rsplit(".", 1)
@@ -147,15 +174,29 @@ def _verify_token(token: Optional[str]) -> Optional[Dict[str, str]]:
         return None
     try:
         data = json.loads(base64.urlsafe_b64decode(raw.encode("ascii")).decode("utf-8"))
-        if isinstance(data, dict) and data.get("u") and data.get("sid"):
-            return data
+        if not (isinstance(data, dict) and data.get("u") and data.get("sid")):
+            return None
+        # Enforce idle timeout: reject tokens not refreshed within SESSION_IDLE_SECONDS
+        iat = data.get("iat")
+        if iat is None or (int(time.time()) - int(iat)) > SESSION_IDLE_SECONDS:
+            return None
+        return data
     except Exception:
         return None
-    return None
+
+
+def _extract_token(request: Request) -> Optional[str]:
+    """Read per-tab Bearer token from Authorization header (or ?token= for downloads).
+    Cookies are intentionally NOT used so new tabs/windows always start at Sign-in."""
+    auth = request.headers.get("authorization") or ""
+    if auth.lower().startswith("bearer "):
+        return auth[7:].strip() or None
+    qp = request.query_params.get("token")
+    return qp.strip() if qp else None
 
 
 def _get_session_user(request: Request, allow_must_change: bool = False) -> Dict[str, Any]:
-    token_data = _verify_token(request.cookies.get(COOKIE_NAME))
+    token_data = _verify_token(_extract_token(request))
     if not token_data:
         raise HTTPException(status_code=401, detail="Not authenticated")
     fresh = portal.get_user(token_data["u"])
@@ -163,7 +204,7 @@ def _get_session_user(request: Request, allow_must_change: bool = False) -> Dict
         raise HTTPException(status_code=401, detail="Account is unavailable or disabled")
     if fresh.get("must_change") and not allow_must_change:
         raise HTTPException(status_code=403, detail="Password change required before continuing")
-    return {**portal.safe_user(fresh), "_sid": token_data["sid"]}
+    return {**portal.safe_user(fresh), "_sid": token_data["sid"], "_u": token_data["u"]}
 
 
 def require_user(request: Request) -> Dict[str, Any]:
@@ -315,10 +356,19 @@ class RecoveryEntryBody(BaseModel):
 @app.get("/", response_class=HTMLResponse)
 def index():
     html_path = os.path.join(TEMPLATES_DIR, "index.html")
+    js_path = os.path.join(STATIC_DIR, "app.js")
+    css_path = os.path.join(STATIC_DIR, "style.css")
     if not os.path.isfile(html_path):
         raise HTTPException(status_code=404, detail="Frontend template not found")
     with open(html_path, "r", encoding="utf-8") as f:
-        return HTMLResponse(f.read())
+        html = f.read()
+    # Cache-bust: append mtime-based version to static assets so browsers
+    # always pick up the latest JS/CSS after a server restart or file change.
+    js_v = int(os.path.getmtime(js_path)) if os.path.isfile(js_path) else 0
+    css_v = int(os.path.getmtime(css_path)) if os.path.isfile(css_path) else 0
+    html = html.replace('href="/static/style.css"', f'href="/static/style.css?v={css_v}"')
+    html = html.replace('src="/static/app.js"', f'src="/static/app.js?v={js_v}"')
+    return HTMLResponse(html)
 
 
 @app.get("/health")
@@ -331,14 +381,12 @@ def health():
 # =============================================================================
 @app.get("/api/auth/me")
 def auth_me(request: Request):
-    token_data = _verify_token(request.cookies.get(COOKIE_NAME))
+    token_data = _verify_token(_extract_token(request))
     if not token_data:
         return _json_ok({"authenticated": False, "user": None})
     fresh = portal.get_user(token_data["u"])
     if not fresh or not fresh["active"]:
-        resp = _json_ok({"authenticated": False, "user": None})
-        resp.delete_cookie(COOKIE_NAME)
-        return resp
+        return _json_ok({"authenticated": False, "user": None})
     return _json_ok({"authenticated": True, "user": portal.safe_user(fresh)})
 
 
@@ -349,14 +397,15 @@ def auth_login(body: LoginBody):
         raise HTTPException(status_code=401, detail="Wrong username or password, or the account is disabled.")
     sid = secrets.token_hex(16)
     token = _sign_token({"u": found["username"], "sid": sid})
-    resp = _json_ok({"ok": True, "user": portal.safe_user(found)})
-    resp.set_cookie(COOKIE_NAME, token, httponly=True, samesite="lax", max_age=86400 * 7)
+    resp = _json_ok({"ok": True, "user": portal.safe_user(found), "token": token})
+    # Clear any legacy shared cookie so new tabs/windows never inherit a session
+    resp.delete_cookie(COOKIE_NAME)
     return resp
 
 
 @app.post("/api/auth/logout")
 def auth_logout(request: Request):
-    token_data = _verify_token(request.cookies.get(COOKIE_NAME))
+    token_data = _verify_token(_extract_token(request))
     if token_data:
         with _CHAT_LOCK:
             _CHAT_SESSIONS.pop(token_data["sid"], None)
@@ -393,6 +442,35 @@ def auth_change_password(body: ChangePasswordBody, user: Dict[str, Any] = Depend
 # =============================================================================
 # ADMIN SIDEBAR & SYSTEM OVERVIEW
 # =============================================================================
+def _delivery_counts(orders_df: pd.DataFrame) -> Dict[str, int]:
+    """Compute delivery status counts for a slice of Order rows."""
+    counts = {
+        "total": 0,
+        "awaiting": 0,
+        "dispatched": 0,
+        "delivered": 0,
+        "not_yet": 0,
+        "returned": 0,
+        "part_returned": 0,
+        "cancelled": 0,
+    }
+    if orders_df.empty:
+        return counts
+    challan = orders_df["challan_no"].fillna("")
+    deliv = orders_df[challan != ""]
+    counts["total"] = int(len(deliv))
+    counts["awaiting"] = int(((orders_df["status"] == portal.OK) & (challan == "")).sum())
+    if not deliv.empty:
+        ds = deliv["delivery_status"]
+        counts["dispatched"] = int((ds == portal.D_DISPATCHED).sum())
+        counts["delivered"] = int((ds == portal.D_DELIVERED).sum())
+        counts["not_yet"] = int((ds == portal.D_NOT_YET).sum())
+        counts["returned"] = int((ds == portal.D_RETURNED).sum())
+        counts["part_returned"] = int((ds == portal.D_PART_RETURN).sum())
+        counts["cancelled"] = int((ds == portal.D_CANCELLED).sum())
+    return counts
+
+
 @app.get("/api/admin/overview")
 def admin_overview(user: Dict[str, Any] = Depends(require_admin)):
     with mgr_lock:
@@ -411,6 +489,30 @@ def admin_overview(user: Dict[str, Any] = Depends(require_admin)):
             except ValueError:
                 age_days = 0
         files_info.append({**fi, "age_days": age_days})
+
+    # Order, Recovery & Delivery status counts for sidebar
+    order_counts = {"New": 0, "In process": 0, "OK": 0, "Hold": 0, "Rejected": 0, "Cancelled": 0, "total": 0}
+    recovery_counts = {"total": 0, "pending": 0, "completed": 0}
+    delivery_counts = _delivery_counts(pd.DataFrame())
+    try:
+        req_df = portal.list_requests()
+        if not req_df.empty:
+            all_df = portal.with_status(req_df)
+            sub_col = all_df["subgroup"].fillna("Order")
+            orders_df = all_df[sub_col == "Order"]
+            order_counts["total"] = int(len(orders_df))
+            for label in ["New", "In process", "OK", "Hold", "Rejected", "Cancelled"]:
+                order_counts[label] = int((orders_df["state"] == label).sum())
+            delivery_counts = _delivery_counts(orders_df)
+
+            rec_df = all_df[sub_col == "Recovery"]
+            if not rec_df.empty:
+                recovery_counts["total"] = int(len(rec_df))
+                recovery_counts["pending"] = int((rec_df["status"] == portal.PENDING).sum())
+                recovery_counts["completed"] = int((rec_df["status"] == portal.OK).sum())
+    except Exception:
+        pass
+
     return _json_ok({
         "safety_pct": int(_safety_pct()),
         "active_stores": len(stores),
@@ -422,6 +524,9 @@ def admin_overview(user: Dict[str, Any] = Depends(require_admin)):
         "warnings": load_info.get("warnings", []),
         "loaded_files": files_info,
         "report_files": report_files,
+        "order_counts": order_counts,
+        "recovery_counts": recovery_counts,
+        "delivery_counts": delivery_counts,
     })
 
 
@@ -985,11 +1090,25 @@ def zone_overview(user: Dict[str, Any] = Depends(require_zone_user)):
     cities = portal.get_zone_cities(zone)
     with mgr_lock:
         items = mgr.get_all_items()
+    order_counts = {"New": 0, "In process": 0, "OK": 0, "Hold": 0, "Rejected": 0, "Cancelled": 0, "total": 0}
+    delivery_counts = _delivery_counts(pd.DataFrame())
+    try:
+        req_df = portal.list_requests(zone=zone, subgroup="Order")
+        if not req_df.empty:
+            orders_df = portal.with_status(req_df)
+            order_counts["total"] = int(len(orders_df))
+            for label in ["New", "In process", "OK", "Hold", "Rejected", "Cancelled"]:
+                order_counts[label] = int((orders_df["state"] == label).sum())
+            delivery_counts = _delivery_counts(orders_df)
+    except Exception:
+        pass
     return _json_ok({
         "zone": zone,
         "cities": cities,
         "items": items,
         "safety_pct": _safety_pct(),
+        "order_counts": order_counts,
+        "delivery_counts": delivery_counts,
     })
 
 
@@ -1209,6 +1328,17 @@ def zone_stock_all(user: Dict[str, Any] = Depends(require_zone_user)):
 # =============================================================================
 # RECOVERY PORTAL ENDPOINTS
 # =============================================================================
+@app.get("/api/recovery/overview")
+def recovery_overview(user: Dict[str, Any] = Depends(require_recovery_user)):
+    df = portal.list_requests(subgroup="Recovery")
+    if df.empty:
+        return _json_ok({"total": 0, "pending": 0, "completed": 0})
+    total = int(len(df))
+    pending = int((df["status"] == portal.PENDING).sum())
+    completed = int((df["status"] == portal.OK).sum())
+    return _json_ok({"total": total, "pending": pending, "completed": completed})
+
+
 @app.get("/api/recovery/meta")
 def recovery_meta(user: Dict[str, Any] = Depends(require_recovery_user)):
     with mgr_lock:
